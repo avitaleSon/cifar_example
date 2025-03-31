@@ -1,0 +1,7 @@
+numpy
+scipy
+matplotlib
+mlflow
+torch
+torchvision
+pymongo
