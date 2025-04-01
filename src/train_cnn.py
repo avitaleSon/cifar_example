@@ -10,6 +10,8 @@ import torchvision.transforms as transforms
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data.sampler import SubsetRandomSampler
+from torchinfo import summary
+from torchmetrics import Accuracy
 
 from cnn import ConvNet
 
@@ -49,14 +51,14 @@ def load_cifar_dataset(data_path: Path,
     train_sampler = torch.utils.data.SubsetRandomSampler(train_idx)
     valid_sampler = torch.utils.data.SubsetRandomSampler(valid_idx)
 
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,sampler=train_sampler,num_workers=2)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,sampler=train_sampler,num_workers=num_workers)
     validloader = torch.utils.data.DataLoader(validset, batch_size=batch_size,
-                                            sampler=valid_sampler,num_workers=2)
+                                            sampler=valid_sampler,num_workers=num_workers)
     # Create Test Dataloader
     testset = torchvision.datasets.CIFAR10(root=data_path, train=False,
                                         download=True, transform=data_transform)
     testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
-                                            shuffle=False, num_workers=2)
+                                            shuffle=False, num_workers=num_workers)
     
     return trainloader, validloader, testloader
 
@@ -128,7 +130,9 @@ if __name__ == '__main__':
 
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(cnn_model.parameters(), lr=0.001)
+    metric = Accuracy(task="multiclass", num_classes=10).to(device)
+    lr = 0.001
+    optimizer = torch.optim.Adam(cnn_model.parameters(), lr=lr)
 
     # Training Loop
     print('Enter Training Loop...')
@@ -138,64 +142,108 @@ if __name__ == '__main__':
     best_train_loss = float('inf')
     best_valid_loss = float('inf')
 
-    for i_epoch in range(num_epochs):
-        # Run Training for each epoch
-        for i, data in enumerate(trainloader,0):
-            # Get the inputs and labels
-            inputs, labels = data
-            inputs, labels = inputs.to(device), labels.to(device)
+    # Set the MLflow tracking URI
+    # To start MLFlow server, run the following command in the terminal:
+    # mlflow server --host 127.0.0.1 --port 5000
+    # Copy the URL and set it to the tracking URI.
+    # Alternatively paste it in the browser to see the MLflow UI
+    mlflow.set_tracking_uri("http://127.0.0.1:5000")
+    mlflow.set_experiment("cifar10_cnn_experiment")
 
-            # Zero the parameter gradients
-            optimizer.zero_grad()
+    # Start an MLflow run
+    # Log Dataset Information to MLFlow
+    with mlflow.start_run(run_name='CNN Training') as run:
+        mlflow.log_param("num_epochs", num_epochs)
+        mlflow.log_param("batch_size", batch_size)
+        mlflow.log_param("lr", lr)
+        mlflow.log_param("loss_fn", criterion.__class__.__name__)
+        mlflow.log_param("optimizer", optimizer.__class__.__name__)
 
-            # Forward pass
-            outputs = cnn_model(inputs)
-            loss_value = criterion(outputs, labels)
+        # Log model summary.
+        with open("../models/cnn_summary.txt", "w") as f:
+            f.write(str(summary(cnn_model)))
+        mlflow.log_artifact("../models/cnn_summary.txt")
 
-            # Backward pass and optimize
-            loss_value.backward()
-            optimizer.step()
+        for i_epoch in range(num_epochs):
+            # Run Training for each epoch
+            for i, data in enumerate(trainloader,0):
+                # Get the inputs and labels
+                inputs, labels = data
+                inputs, labels = inputs.to(device), labels.to(device)
 
-            # Print statistics
-            if i % 100 == 0:
-                print(f'Training: Epoch [{i_epoch + 1}/{num_epochs}], Step [{i + 1}/{len(trainloader)}], Loss: {loss_value.item():.4f}')
-            train_loss.append(loss_value.item())
-            if loss_value.item() < best_train_loss:
-                print('Found new best training loss')
-                best_train_loss = loss_value.item()
+                # Zero the parameter gradients
+                optimizer.zero_grad()
 
-        # Run Validation for each epoch
-        for i, data in enumerate(validloader, 0):
-            # Get the inputs and labels
-            inputs, labels = data
-            inputs, labels = inputs.to(device), labels.to(device)
+                # Forward pass
+                outputs = cnn_model(inputs)
+                loss_value = criterion(outputs, labels)
+                accuracy_value = metric(outputs, labels)
 
-            # Zero the parameter gradients
-            optimizer.zero_grad()
+                # Backward pass and optimize
+                loss_value.backward()
+                optimizer.step()
+                if i%50==0:
+                   # Log metrics to MLFlow
+                    mlflow.log_metric("train_loss", loss_value.item(), step=i)
+                    mlflow.log_metric("train_accuracy", accuracy_value.item(), step=i)
+                # Print statistics
+                if i % 100 == 0:
+                     print(f'Training: Epoch [{i_epoch + 1}/{num_epochs}], Step [{i + 1}/{len(trainloader)}], Loss: {loss_value.item():.4f}')
+                
+                train_loss.append(loss_value.item())
+                if loss_value.item() < best_train_loss:
+                    print('Found new best training loss')
+                    best_train_loss = loss_value.item()
 
-            # Forward pass
-            outputs = cnn_model(inputs)
-            loss_value = criterion(outputs, labels)
+            # Run Validation for each epoch
+            for i, data in enumerate(validloader, 0):
+                # Get the inputs and labels
+                inputs, labels = data
+                inputs, labels = inputs.to(device), labels.to(device)
 
-            # Print statistics
-            if i % 100 == 0:
-                print(f'Validation: Epoch [{i_epoch + 1}/{num_epochs}], Step [{i + 1}/{len(validloader)}], Loss: {loss_value.item():.4f}')
-            # Save Model with lowest validation Loss
-            if loss_value.item() < best_valid_loss:
-                print('Found new best validation loss')
-                best_valid_loss = loss_value.item()
-                is_best = True
-                file_path = '../models/cnn_model.pth.tar'
-                save_checkpoint({
-                    'epoch': i_epoch + 1,
-                    'state_dict': cnn_model.state_dict(),
-                    'best_loss': best_valid_loss,
-                    'optimizer': optimizer.state_dict(),
-                }, is_best, filename=file_path)
-            valid_loss.append(loss_value.item())
-        
-    print(f"Training Complete! Best Training Loss: {best_train_loss:.4f}, Best Validation Loss: {best_valid_loss:.4f}")
+                # Zero the parameter gradients
+                optimizer.zero_grad()
 
+                # Forward pass
+                outputs = cnn_model(inputs)
+                loss_value = criterion(outputs, labels)
+                accuracy_value = metric(outputs, labels)
+                if i%50==0:
+                    # Log metrics to MLFlow
+                    mlflow.log_metric("validation_loss", loss_value.item(), step=i)
+                    mlflow.log_metric("validation_accuracy", accuracy_value.item(), step=i)
+                # Print statistics
+                if i % 100 == 0:
+                    print(f'Validation: Epoch [{i_epoch + 1}/{num_epochs}], Step [{i + 1}/{len(validloader)}], Loss: {loss_value.item():.4f}')
+                # Save Model with lowest validation Loss
+                if loss_value.item() < best_valid_loss:
+                    print('Found new best validation loss')
+                    best_valid_loss = loss_value.item()
+                    is_best = True
+                    file_path = '../models/cnn_model.pth.tar'
+                    save_checkpoint({
+                        'epoch': i_epoch + 1,
+                        'state_dict': cnn_model.state_dict(),
+                        'best_loss': best_valid_loss,
+                        'optimizer': optimizer.state_dict(),
+                    }, is_best, filename=file_path)
+                    # Remove previous model if it already exists
+                    if Path("../models/cnn_model").exists():
+                        shutil.rmtree("../models/cnn_model")
+                    mlflow.pytorch.save_model(cnn_model, "../models/cnn_model")
 
-    # Run Classification on Test Set
+                valid_loss.append(loss_value.item())
+            
+        print(f"Training Complete! Best Training Loss: {best_train_loss:.4f}, Best Validation Loss: {best_valid_loss:.4f}")
 
+    ################################
+    #### Log models with MLFlow ####
+    ################################    
+
+    # Register MLFlow Model
+    # for i_model_info in mlflow_log_info:
+    #     model_name = i_model_info['name']
+    #     run_id = input(f"Enter the run ID for {model_name}: ")
+    #     model_uri = f'runs:/{run_id}/{model_name}'
+    #     mlflow.register_model(model_uri, model_name)
+    # print("Models logged successfully to MLFlow.")
