@@ -4,4 +4,6 @@ matplotlib
 mlflow
 torch
 torchvision
+torchinfo
+torchmetrics
 pymongo
