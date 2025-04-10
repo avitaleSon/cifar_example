@@ -241,9 +241,8 @@ if __name__ == '__main__':
     ################################    
 
     # Register MLFlow Model
-    # for i_model_info in mlflow_log_info:
-    #     model_name = i_model_info['name']
-    #     run_id = input(f"Enter the run ID for {model_name}: ")
-    #     model_uri = f'runs:/{run_id}/{model_name}'
-    #     mlflow.register_model(model_uri, model_name)
-    # print("Models logged successfully to MLFlow.")
+    model_name = 'cnn'
+    run_id = input(f"Enter the run ID for {model_name}: ")
+    model_uri = f'runs:/{run_id}/{model_name}'
+    mlflow.register_model(model_uri, model_name)
+    print("Model logged successfully to MLFlow.")
